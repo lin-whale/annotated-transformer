@@ -208,7 +208,7 @@ def make_model(
         c(src_embed),
         c(tgt_embed),
         Encoder(EncoderLayer(c(attn), c(ffn), d_model, dropout), N),
-        Decoder(DecoderLayer(c(attn), c(attn), c(ffn), d_model, dropout)),
+        Decoder(DecoderLayer(c(attn), c(attn), c(ffn), d_model, dropout), N),
         c(generator)
     )
 
@@ -339,48 +339,50 @@ def run_epoch(
             )
             start_time = time.time()
             tokens = 0
+        del loss_node, loss
     return total_loss / total_tokens, train_state
 
-def data_gen(length, batch_size, batches):
+def data_gen(vocab, batch_size, batches):
     for _ in range(batches):
-        src = torch.randint(1, 20, (batch_size, length)).type(torch.long)
+        src = torch.randint(1, vocab, (batch_size, 10)).type(torch.long)
         src[:, 0] = 1
-        yield Batch(src, src, 0)
+        src = src.clone().detach()
+        tgt = src.clone().detach()
+        yield Batch(src, tgt, 0)
 
 def greedy_decode(model: EncoderDecoder, src, src_mask, max_len, start_index):
-    ys = torch.zeros(1, 1).fill_(start_index)
+    ys = torch.zeros(1, 1).fill_(start_index).type(torch.long)
     memory = model.encode(src, src_mask)
     for _ in range(max_len-1):
         out = model.decode(memory, ys, src_mask, subsequent_mask(ys.size(-1)))
         prob = model.generator(out[:, -1])
         _, next_ = torch.max(prob, dim=-1)
-        ys = torch.concat(ys, next_.unsqueeze(0))
+        ys = torch.concat((ys, next_.unsqueeze(0)), -1)
     return ys
 
 def rate(step, warmup=4000, d_model=512, factor = 1.0):
-    return factor * d_model ** 0.5 * min(step ** 0.5, step * warmup ** -1.5)
+    if step == 0:
+        step = 1
+    return factor * d_model ** -0.5 * min(step ** -0.5, step * warmup ** -1.5)
 
 def train_examples():
-    src_vocab = 20
-    tgt_vocab = 20
-    seq_len = 20
+    V = 11
     batches = 20
-    epoches = 10
+    batch_size = 80
     lr = 0.5
     d_model = 512
     warm_up = 400
-    data_iter = data_gen(seq_len, src_vocab, batches)
-    model = make_model(src_vocab, tgt_vocab, d_model=d_model)
+    model = make_model(V, V, N=2, d_model=d_model)
     optimizer = torch.optim.Adam(model.parameters(), lr, betas=(0.9, 0.98), eps=1e-9)
     lr_scheduler = LambdaLR(optimizer, lr_lambda=lambda x: rate(x, warmup=warm_up, d_model=d_model))
-    criterion = LabelSmoothing(tgt_vocab)
+    criterion = LabelSmoothing(V)
     loss_compute = SimpleLoss(criterion, model.generator)
-    for _ in range(epoches):
+    for _ in range(20):
         model.train()
         run_epoch(
             optimizer,
             lr_scheduler,
-            data_gen(seq_len, src_vocab, batches),
+            data_gen(V, batch_size, batches),
             model,
             loss_compute,
             1,
@@ -392,7 +394,7 @@ def train_examples():
         run_epoch(
             optimizer,
             lr_scheduler,
-            data_gen(seq_len, src_vocab, batches),
+            data_gen(V, batch_size, 5),
             model,
             loss_compute,
             1,
@@ -400,6 +402,7 @@ def train_examples():
             train_state=TrainState()
         )
     src = torch.tensor([range(1, 11)]).type(torch.long)
+    print(src)
     src_mask = torch.ones(1, 1, 10)
     ys = greedy_decode(model, src, src_mask, 10, 1)
     print(ys)
